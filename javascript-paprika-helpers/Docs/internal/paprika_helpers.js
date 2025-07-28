@@ -40,7 +40,7 @@ if (!fs.existsSync(CACHE_DIR)) {
 // ============================================================================
 
 /**
- * Make API request with error handling and caching
+ * Make API request with improved error handling and caching
  * @param {string} endpoint - API endpoint
  * @param {Object} params - Query parameters
  * @returns {Promise<Object>} API response
@@ -62,32 +62,65 @@ async function apiRequest(endpoint, params = {}) {
         }
     }
     
-    try {
-        const url = new URL(endpoint, BASE_URL);
-        Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
-        
-        const response = await new Promise((resolve, reject) => {
-            https.get(url.toString(), (res) => {
-                let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                    try {
-                        const jsonData = JSON.parse(data);
-                        // Cache response
-                        fs.writeFileSync(cacheFile, JSON.stringify(jsonData));
-                        resolve(jsonData);
-                    } catch (e) {
-                        reject(new Error('Invalid JSON response'));
-                    }
+    // Retry mechanism for failed requests
+    let retries = 3;
+    let lastError;
+    
+    while (retries > 0) {
+        try {
+            const url = new URL(endpoint, BASE_URL);
+            Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
+            
+            const response = await new Promise((resolve, reject) => {
+                const req = https.get(url.toString(), (res) => {
+                    let data = '';
+                    res.on('data', chunk => data += chunk);
+                    res.on('end', () => {
+                        // Validate response status
+                        if (res.statusCode < 200 || res.statusCode >= 300) {
+                            reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+                            return;
+                        }
+                        
+                        // Validate JSON response
+                        if (!data || data.trim().length === 0) {
+                            reject(new Error('Empty response body'));
+                            return;
+                        }
+                        
+                        try {
+                            const jsonData = JSON.parse(data);
+                            // Cache successful response
+                            fs.writeFileSync(cacheFile, JSON.stringify(jsonData));
+                            resolve(jsonData);
+                        } catch (e) {
+                            reject(new Error(`Invalid JSON response: ${e.message}`));
+                        }
+                    });
                 });
-            }).on('error', reject);
-        });
-        
-        return response;
-    } catch (error) {
-        console.error(`API request failed: ${error.message}`);
-        return { error: error.message };
+                
+                req.on('error', reject);
+                req.setTimeout(10000, () => {
+                    req.destroy();
+                    reject(new Error('Request timeout'));
+                });
+            });
+            
+            return response;
+            
+        } catch (error) {
+            lastError = error;
+            retries--;
+            
+            if (retries > 0) {
+                // Wait before retry (exponential backoff)
+                await new Promise(resolve => setTimeout(resolve, (4 - retries) * 1000));
+            }
+        }
     }
+    
+    console.error(`API request failed after 3 retries: ${lastError.message}`);
+    return { error: lastError.message };
 }
 
 /**
@@ -280,17 +313,29 @@ function extractTimeMetrics(tokenData, timeframe = '24h') {
 }
 
 /**
- * Extract key metrics from pool data
+ * Extract key metrics from pool data with validation
  * @param {Object} poolData - Pool data
  * @returns {Object} Pool metrics
  */
 function extractPoolMetrics(poolData) {
+    // Helper function to validate numeric values
+    const validateNumeric = (value, defaultValue = 0) => {
+        const num = parseFloat(value);
+        return (!isNaN(num) && isFinite(num) && num >= 0) ? num : defaultValue;
+    };
+    
+    // Helper function to validate price specifically (must be positive)
+    const validatePrice = (value) => {
+        const num = parseFloat(value);
+        return (!isNaN(num) && isFinite(num) && num > 0) ? num : 0;
+    };
+    
     return {
-        price_usd: poolData?.price_usd || 0,
-        volume_usd: poolData?.volume_usd || 0,
-        transactions: poolData?.transactions || 0,
-        last_price_change_24h: poolData?.last_price_change_usd_24h || 0,
-        fee: poolData?.fee || 0
+        price_usd: validatePrice(poolData?.price_usd),
+        volume_usd: validateNumeric(poolData?.volume_usd),
+        transactions: validateNumeric(poolData?.transactions),
+        last_price_change_24h: validateNumeric(poolData?.last_price_change_usd_24h, 0),
+        fee: validateNumeric(poolData?.fee)
     };
 }
 
@@ -311,20 +356,35 @@ function extractTokenInfo(tokenData) {
 }
 
 /**
- * Extract key transaction information
+ * Extract key transaction information with improved symbol extraction
  * @param {Object} txData - Transaction data
  * @returns {Object} Transaction info
  */
 function extractTransactionInfo(txData) {
+    // Try multiple possible field names for token symbols
+    const getTokenSymbol = (data, tokenIndex) => {
+        return data?.[`token_${tokenIndex}_symbol`] || 
+               data?.tokens?.[tokenIndex]?.symbol ||
+               data?.[`token${tokenIndex}`]?.symbol ||
+               data?.pool?.tokens?.[tokenIndex]?.symbol ||
+               `Token${tokenIndex}`;
+    };
+    
+    // Validate and sanitize prices
+    const validatePrice = (price) => {
+        const num = parseFloat(price);
+        return (!isNaN(num) && num > 0) ? num : 0;
+    };
+    
     return {
         id: txData?.id || '',
         pool_id: txData?.pool_id || '',
-        token_0_symbol: txData?.token_0_symbol || '',
-        token_1_symbol: txData?.token_1_symbol || '',
+        token_0_symbol: getTokenSymbol(txData, 0),
+        token_1_symbol: getTokenSymbol(txData, 1),
         amount_0: txData?.amount_0 || '',
         amount_1: txData?.amount_1 || '',
-        price_0_usd: txData?.price_0_usd || 0,
-        price_1_usd: txData?.price_1_usd || 0,
+        price_0_usd: validatePrice(txData?.price_0_usd),
+        price_1_usd: validatePrice(txData?.price_1_usd),
         created_at: txData?.created_at || ''
     };
 }
@@ -400,13 +460,18 @@ function filterByPriceChange(data, minChange) {
 }
 
 /**
- * Filter pools by minimum volume
+ * Filter pools by minimum volume with validation
  * @param {Array} data - Data array
  * @param {number} minVolume - Minimum volume
  * @returns {Array} Filtered data
  */
 function filterByVolume(data, minVolume) {
-    return data.filter(item => (item?.volume_usd || 0) >= minVolume);
+    if (!Array.isArray(data)) return [];
+    
+    return data.filter(item => {
+        const volume = parseFloat(item?.volume_usd);
+        return !isNaN(volume) && isFinite(volume) && volume >= minVolume;
+    });
 }
 
 /**
@@ -507,15 +572,24 @@ function filterRecentTransactions(txData, hours = 24) {
 }
 
 /**
- * Filter transactions by minimum USD value
+ * Filter transactions by minimum USD value with validation
  * @param {Array} txData - Transaction data
  * @param {number} minUsd - Minimum USD value
  * @returns {Array} Filtered transactions
  */
 function filterLargeTransactions(txData, minUsd) {
-    return txData.filter(tx => 
-        Math.max(tx?.price_0_usd || 0, tx?.price_1_usd || 0) >= minUsd
-    );
+    if (!Array.isArray(txData)) return [];
+    
+    return txData.filter(tx => {
+        const price0 = parseFloat(tx?.price_0_usd);
+        const price1 = parseFloat(tx?.price_1_usd);
+        
+        // Only include valid, positive prices
+        const validPrice0 = !isNaN(price0) && isFinite(price0) && price0 > 0 ? price0 : 0;
+        const validPrice1 = !isNaN(price1) && isFinite(price1) && price1 > 0 ? price1 : 0;
+        
+        return Math.max(validPrice0, validPrice1) >= minUsd;
+    });
 }
 
 /**
@@ -540,13 +614,23 @@ function filterByTimeframe(ohlcvData, startTime, endTime = null) {
 // ============================================================================
 
 /**
- * Calculate percentage price change
+ * Calculate percentage price change with bounds checking
  * @param {number} current - Current price
  * @param {number} previous - Previous price
- * @returns {number} Percentage change
+ * @returns {number} Percentage change (capped at ±10000%)
  */
 function calculatePriceChange(current, previous) {
-    return previous !== 0 ? ((current - previous) / previous) * 100 : 0;
+    // Validate inputs
+    if (!current || !previous || isNaN(current) || isNaN(previous)) return 0;
+    if (previous <= 0 || current < 0) return 0;
+    
+    const change = ((current - previous) / previous) * 100;
+    
+    // Cap extreme values to prevent unrealistic percentages
+    if (change > 10000) return 10000;
+    if (change < -10000) return -10000;
+    
+    return change;
 }
 
 /**
@@ -871,6 +955,130 @@ function createTimestamp(daysAgo = 0) {
     const date = new Date();
     date.setDate(date.getDate() - daysAgo);
     return date.toISOString().split('T')[0];
+}
+
+/**
+ * Validate and sanitize price data
+ * @param {number|string} price - Price value
+ * @returns {number} Valid price or 0
+ */
+function validatePrice(price) {
+    const num = parseFloat(price);
+    return (!isNaN(num) && isFinite(num) && num > 0) ? num : 0;
+}
+
+/**
+ * Calculate safe percentage change with bounds checking
+ * @param {number} current - Current value
+ * @param {number} previous - Previous value
+ * @param {number} maxPercent - Maximum allowed percentage (default: 10000)
+ * @returns {number} Safe percentage change
+ */
+function calculateSafePercentage(current, previous, maxPercent = 10000) {
+    const currPrice = validatePrice(current);
+    const prevPrice = validatePrice(previous);
+    
+    if (prevPrice === 0 || currPrice === 0) return 0;
+    
+    const change = ((currPrice - prevPrice) / prevPrice) * 100;
+    
+    // Cap extreme values
+    if (change > maxPercent) return maxPercent;
+    if (change < -maxPercent) return -maxPercent;
+    
+    return change;
+}
+
+/**
+ * Extract safe token symbols with fallbacks
+ * @param {Object} data - Data object
+ * @param {number} tokenIndex - Token index (0 or 1)
+ * @returns {string} Token symbol or fallback
+ */
+function extractSafeTokenSymbol(data, tokenIndex) {
+    // Try multiple possible field locations
+    const possiblePaths = [
+        `token_${tokenIndex}_symbol`,
+        `tokens.${tokenIndex}.symbol`,
+        `token${tokenIndex}.symbol`,
+        `pool.tokens.${tokenIndex}.symbol`,
+        `pool.token_${tokenIndex}.symbol`
+    ];
+    
+    for (const path of possiblePaths) {
+        const value = getNestedValue(data, path);
+        if (value && typeof value === 'string' && value.trim().length > 0) {
+            return value.trim();
+        }
+    }
+    
+    // Fallback to token address or generic name
+    const addressPaths = [
+        `token_${tokenIndex}_address`,
+        `tokens.${tokenIndex}.address`,
+        `token${tokenIndex}.address`
+    ];
+    
+    for (const path of addressPaths) {
+        const address = getNestedValue(data, path);
+        if (address && typeof address === 'string') {
+            return `${address.slice(0, 6)}...${address.slice(-4)}`;
+        }
+    }
+    
+    return `Token${tokenIndex}`;
+}
+
+/**
+ * Get nested object value safely
+ * @param {Object} obj - Object to traverse
+ * @param {string} path - Dot notation path
+ * @returns {any} Value or undefined
+ */
+function getNestedValue(obj, path) {
+    if (!obj || typeof obj !== 'object') return undefined;
+    
+    const keys = path.split('.');
+    let current = obj;
+    
+    for (const key of keys) {
+        if (current === null || current === undefined) return undefined;
+        
+        // Handle array indices
+        if (/^\d+$/.test(key)) {
+            const index = parseInt(key);
+            if (Array.isArray(current) && index >= 0 && index < current.length) {
+                current = current[index];
+            } else {
+                return undefined;
+            }
+        } else {
+            current = current[key];
+        }
+    }
+    
+    return current;
+}
+
+/**
+ * Clean and validate pool data for safe processing
+ * @param {Array} pools - Raw pool data
+ * @returns {Array} Cleaned pool data
+ */
+function cleanPoolData(pools) {
+    if (!Array.isArray(pools)) return [];
+    
+    return pools
+        .filter(pool => pool && typeof pool === 'object')
+        .map(pool => ({
+            ...pool,
+            price_usd: validatePrice(pool.price_usd),
+            volume_usd: Math.max(0, parseFloat(pool.volume_usd) || 0),
+            transactions: Math.max(0, parseInt(pool.transactions) || 0),
+            last_price_change_usd_24h: isFinite(parseFloat(pool.last_price_change_usd_24h)) 
+                ? parseFloat(pool.last_price_change_usd_24h) : 0
+        }))
+        .filter(pool => pool.price_usd > 0 || pool.volume_usd > 0); // Remove empty pools
 }
 
 // ============================================================================
@@ -1266,6 +1474,13 @@ module.exports = {
     validateNetwork,
     validateTokenAddress,
     createTimestamp,
+    
+    // NEW: Data Validation & Safety Helpers
+    validatePrice,
+    calculateSafePercentage,
+    extractSafeTokenSymbol,
+    getNestedValue,
+    cleanPoolData,
     
     // Advanced Helpers
     getTopMovers,
