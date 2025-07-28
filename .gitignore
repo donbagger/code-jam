@@ -8,6 +8,7 @@
 /PARITY_ACHIEVEMENT_SUMMARY.md
 /RUST_IMPLEMENTATION_SUMMARY.md
 Cargo.toml
+Docs/
 
 # Python artifacts
 __pycache__/
