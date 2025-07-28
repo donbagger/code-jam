@@ -9,7 +9,7 @@
 /RUST_IMPLEMENTATION_SUMMARY.md
 Cargo.toml
 Docs-internal/
-DEVELOPER_GUIDE.md
+/DEVELOPER_GUIDE.md
 
 # Python artifacts
 __pycache__/
