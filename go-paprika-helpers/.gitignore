@@ -1,5 +1,4 @@
-# Hide internal implementation files
-/Docs/
+
 
 # Go artifacts
 *.exe
