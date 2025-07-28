@@ -9,6 +9,7 @@ import requests
 import pandas as pd
 import json
 import time
+import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Union, Any, Tuple
 import os
@@ -69,28 +70,53 @@ class OHLCVRecord:
 # ============================================================================
 
 def api_request(endpoint: str, params: Dict = None) -> Dict:
-    """Make API request with error handling and caching"""
+    """Make API request with improved error handling and caching"""
     cache_key = hashlib.md5(f"{endpoint}{json.dumps(params or {}, sort_keys=True)}".encode()).hexdigest()
     cache_file = CACHE_DIR / f"{cache_key}.pkl"
     
     # Check cache
     if cache_file.exists() and time.time() - cache_file.stat().st_mtime < CACHE_DURATION:
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
+        try:
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+        except (pickle.PickleError, EOFError):
+            # Cache corrupted, continue with API call
+            cache_file.unlink(missing_ok=True)
     
-    try:
-        response = requests.get(f"{BASE_URL}{endpoint}", params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Cache response
-        with open(cache_file, 'wb') as f:
-            pickle.dump(data, f)
-        
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API request failed: {e}")
-        return {"error": str(e)}
+    # Retry mechanism for failed requests
+    retries = 3
+    last_error = None
+    
+    for attempt in range(retries):
+        try:
+            response = requests.get(f"{BASE_URL}{endpoint}", params=params, timeout=10)
+            
+            # Validate response status
+            if response.status_code >= 400:
+                response.raise_for_status()
+            
+            # Validate response content
+            if not response.content or len(response.content.strip()) == 0:
+                raise requests.exceptions.RequestException("Empty response body")
+            
+            data = response.json()
+            
+            # Cache successful response
+            with open(cache_file, 'wb') as f:
+                pickle.dump(data, f)
+            
+            return data
+            
+        except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
+            last_error = e
+            
+            if attempt < retries - 1:
+                # Wait before retry (exponential backoff)
+                time.sleep((attempt + 1) * 1.0)
+                continue
+    
+    logger.error(f"API request failed after {retries} retries: {last_error}")
+    return {"error": str(last_error)}
 
 def get_networks() -> List[Dict]:
     """Get all supported blockchain networks"""
@@ -196,16 +222,54 @@ def extract_token_info(token_data: Dict) -> Dict:
     }
 
 def extract_transaction_info(tx_data: Dict) -> Dict:
-    """Extract key transaction information"""
+    """Extract key transaction information with improved symbol extraction"""
+    
+    def get_token_symbol(data: Dict, token_index: int) -> str:
+        """Try multiple possible field names for token symbols"""
+        possible_paths = [
+            f"token_{token_index}_symbol",
+            f"tokens.{token_index}.symbol",
+            f"token{token_index}.symbol",
+            f"pool.tokens.{token_index}.symbol",
+            f"pool.token_{token_index}.symbol"
+        ]
+        
+        for path in possible_paths:
+            value = get_nested_value(data, path)
+            if value and isinstance(value, str) and value.strip():
+                return value.strip()
+        
+        # Fallback to token address
+        address_paths = [
+            f"token_{token_index}_address",
+            f"tokens.{token_index}.address",
+            f"token{token_index}.address"
+        ]
+        
+        for path in address_paths:
+            address = get_nested_value(data, path)
+            if address and isinstance(address, str) and len(address) > 6:
+                return f"{address[:6]}...{address[-4:]}"
+        
+        return f"Token{token_index}"
+    
+    def validate_price(price: Union[float, str, None]) -> float:
+        """Validate and sanitize prices"""
+        try:
+            num = float(price) if price is not None else 0.0
+            return num if num > 0 and math.isfinite(num) else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+    
     return {
         "id": tx_data.get("id", ""),
         "pool_id": tx_data.get("pool_id", ""),
-        "token_0_symbol": tx_data.get("token_0_symbol", ""),
-        "token_1_symbol": tx_data.get("token_1_symbol", ""),
+        "token_0_symbol": get_token_symbol(tx_data, 0),
+        "token_1_symbol": get_token_symbol(tx_data, 1),
         "amount_0": tx_data.get("amount_0", ""),
         "amount_1": tx_data.get("amount_1", ""),
-        "price_0_usd": tx_data.get("price_0_usd", 0),
-        "price_1_usd": tx_data.get("price_1_usd", 0),
+        "price_0_usd": validate_price(tx_data.get("price_0_usd")),
+        "price_1_usd": validate_price(tx_data.get("price_1_usd")),
         "created_at": tx_data.get("created_at", "")
     }
 
@@ -247,6 +311,92 @@ def extract_pool_tokens(pool_data: Dict) -> List[Dict]:
     return pool_data.get("tokens", []) if isinstance(pool_data, dict) else []
 
 # ============================================================================
+# DATA VALIDATION & UTILITY HELPERS
+# ============================================================================
+
+def get_nested_value(obj: Dict, path: str) -> Any:
+    """Get nested object value safely using dot notation"""
+    if not obj or not isinstance(obj, dict):
+        return None
+    
+    keys = path.split('.')
+    current = obj
+    
+    for key in keys:
+        if current is None or not isinstance(current, dict):
+            return None
+        
+        # Handle array indices
+        if key.isdigit():
+            try:
+                index = int(key)
+                if isinstance(current, list) and 0 <= index < len(current):
+                    current = current[index]
+                else:
+                    return None
+            except (ValueError, IndexError):
+                return None
+        else:
+            current = current.get(key)
+    
+    return current
+
+def validate_price(price: Union[float, str, None]) -> float:
+    """Validate and sanitize price data"""
+    try:
+        num = float(price) if price is not None else 0.0
+        return num if num > 0 and math.isfinite(num) else 0.0
+    except (ValueError, TypeError):
+        return 0.0
+
+def calculate_safe_percentage(current: Union[float, str], previous: Union[float, str], max_percent: float = 10000.0) -> float:
+    """Calculate safe percentage change with bounds checking"""
+    curr_price = validate_price(current)
+    prev_price = validate_price(previous)
+    
+    if prev_price == 0 or curr_price == 0:
+        return 0.0
+    
+    change = ((curr_price - prev_price) / prev_price) * 100
+    
+    # Cap extreme values
+    if change > max_percent:
+        return max_percent
+    if change < -max_percent:
+        return -max_percent
+    
+    return change
+
+def clean_pool_data(pools: List[Dict]) -> List[Dict]:
+    """Clean and validate pool data for safe processing"""
+    if not isinstance(pools, list):
+        return []
+    
+    cleaned_pools = []
+    for pool in pools:
+        if not isinstance(pool, dict):
+            continue
+        
+        # Clean the pool data
+        cleaned_pool = pool.copy()
+        cleaned_pool['price_usd'] = validate_price(pool.get('price_usd'))
+        cleaned_pool['volume_usd'] = max(0.0, float(pool.get('volume_usd', 0)) if pool.get('volume_usd') is not None else 0.0)
+        cleaned_pool['transactions'] = max(0, int(pool.get('transactions', 0)) if pool.get('transactions') is not None else 0)
+        
+        # Validate percentage change
+        price_change = pool.get('last_price_change_usd_24h')
+        if price_change is not None and math.isfinite(float(price_change)):
+            cleaned_pool['last_price_change_usd_24h'] = float(price_change)
+        else:
+            cleaned_pool['last_price_change_usd_24h'] = 0.0
+        
+        # Only include pools with valid data
+        if cleaned_pool['price_usd'] > 0 or cleaned_pool['volume_usd'] > 0:
+            cleaned_pools.append(cleaned_pool)
+    
+    return cleaned_pools
+
+# ============================================================================
 # FILTERING & SORTING HELPERS (12 functions)
 # ============================================================================
 
@@ -255,8 +405,18 @@ def filter_by_price_change(data: List[Dict], min_change: float) -> List[Dict]:
     return [item for item in data if abs(item.get("last_price_change_usd_24h", 0)) >= min_change]
 
 def filter_by_volume(data: List[Dict], min_volume: float) -> List[Dict]:
-    """Filter pools by minimum volume"""
-    return [item for item in data if item.get("volume_usd", 0) >= min_volume]
+    """Filter pools by minimum volume with validation"""
+    if not isinstance(data, list):
+        return []
+    
+    def validate_volume(volume):
+        try:
+            num = float(volume) if volume is not None else 0.0
+            return num if math.isfinite(num) and num >= 0 else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+    
+    return [item for item in data if validate_volume(item.get("volume_usd")) >= min_volume]
 
 def filter_by_network(data: List[Dict], network: str) -> List[Dict]:
     """Filter data by network"""

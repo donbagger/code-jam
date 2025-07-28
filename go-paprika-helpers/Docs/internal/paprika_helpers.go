@@ -57,7 +57,7 @@ func init() {
 // CORE API HELPERS (12 functions)
 // ============================================================================
 
-// APIRequest makes an HTTP request to the DexPaprika API with caching and error handling
+// APIRequest makes an HTTP request to the DexPaprika API with improved error handling and caching
 func APIRequest(endpoint string, params map[string]string) (interface{}, error) {
 	// Create cache key
 	cacheKey := createCacheKey(endpoint, params)
@@ -83,43 +83,80 @@ func APIRequest(endpoint string, params map[string]string) (interface{}, error) 
 	}
 	u.RawQuery = q.Encode()
 
-	// Make request
-	resp, err := httpClient.Get(u.String())
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	// Retry mechanism for failed requests
+	maxRetries := 3
+	var lastErr error
 
-	// Read response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Make request
+		resp, err := httpClient.Get(u.String())
+		if err != nil {
+			lastErr = fmt.Errorf("API request failed: %w", err)
 
-	// Check for API errors
-	if resp.StatusCode >= 400 {
-		var apiErr APIError
-		if json.Unmarshal(body, &apiErr) == nil {
-			return nil, fmt.Errorf("API error: %s", apiErr.Error)
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Duration(attempt+1) * time.Second)
+				continue
+			}
+			return nil, lastErr
 		}
-		return nil, fmt.Errorf("API error: %s", string(body))
+		defer resp.Body.Close()
+
+		// Read response
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Duration(attempt+1) * time.Second)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		// Validate response content
+		if len(body) == 0 {
+			lastErr = fmt.Errorf("empty response body")
+
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Duration(attempt+1) * time.Second)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		// Check for API errors
+		if resp.StatusCode >= 400 {
+			var apiErr APIError
+			if json.Unmarshal(body, &apiErr) == nil {
+				return nil, fmt.Errorf("API error: %s", apiErr.Error)
+			}
+			return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Parse JSON
+		var result interface{}
+		if err := json.Unmarshal(body, &result); err != nil {
+			lastErr = fmt.Errorf("failed to parse JSON: %w", err)
+
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Duration(attempt+1) * time.Second)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		// Store successful result in cache
+		cacheMux.Lock()
+		cache[cacheKey] = CacheEntry{
+			Data:      result,
+			Timestamp: time.Now(),
+		}
+		cacheMux.Unlock()
+
+		return result, nil
 	}
 
-	// Parse JSON
-	var result interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	// Store in cache
-	cacheMux.Lock()
-	cache[cacheKey] = CacheEntry{
-		Data:      result,
-		Timestamp: time.Now(),
-	}
-	cacheMux.Unlock()
-
-	return result, nil
+	return nil, lastErr
 }
 
 // GetNetworks retrieves all supported blockchain networks
@@ -875,12 +912,17 @@ func FilterRecentTransactions(transactions []Transaction, hours int) []Transacti
 	return filtered
 }
 
-// FilterLargeTransactions filters transactions by minimum USD value
+// FilterLargeTransactions filters transactions by minimum USD value with validation
 func FilterLargeTransactions(transactions []Transaction, minUSD float64) []Transaction {
 	var filtered []Transaction
 
 	for _, tx := range transactions {
-		totalUSD := tx.Price0USD + tx.Price1USD
+		// Validate prices before using them
+		price0 := ValidatePrice(tx.Price0USD)
+		price1 := ValidatePrice(tx.Price1USD)
+		
+		// Only include transactions with valid, positive prices
+		totalUSD := math.Max(price0, price1)
 		if totalUSD >= minUSD {
 			filtered = append(filtered, tx)
 		}
@@ -922,12 +964,26 @@ func FilterByTimeframe(records []OHLCVRecord, startTime string, endTime string) 
 // ANALYSIS HELPERS (10 functions)
 // ============================================================================
 
-// CalculatePriceChange calculates percentage price change
+// CalculatePriceChange calculates percentage price change with bounds checking
 func CalculatePriceChange(current, previous float64) float64 {
-	if previous == 0 {
+	// Validate inputs
+	if previous <= 0 || current < 0 || math.IsInf(current, 0) || math.IsNaN(current) ||
+		math.IsInf(previous, 0) || math.IsNaN(previous) {
 		return 0
 	}
-	return ((current - previous) / previous) * 100
+
+	change := ((current - previous) / previous) * 100
+
+	// Cap extreme values to prevent unrealistic percentages
+	const maxChange = 10000.0
+	if change > maxChange {
+		return maxChange
+	}
+	if change < -maxChange {
+		return -maxChange
+	}
+
+	return change
 }
 
 // CalculateVolumeWeightedPrice calculates volume-weighted average price
@@ -1309,6 +1365,101 @@ func AnalyzeTransactionPatterns(transactions []Transaction) map[string]interface
 	analysis["pair_distribution"] = pairCounts
 
 	return analysis
+}
+
+// ============================================================================
+// DATA VALIDATION & SAFETY HELPERS
+// ============================================================================
+
+// ValidatePrice validates and sanitizes price data
+func ValidatePrice(price float64) float64 {
+	if price <= 0 || math.IsInf(price, 0) || math.IsNaN(price) {
+		return 0.0
+	}
+	return price
+}
+
+// CalculateSafePercentage calculates safe percentage change with bounds checking
+func CalculateSafePercentage(current, previous, maxPercent float64) float64 {
+	currPrice := ValidatePrice(current)
+	prevPrice := ValidatePrice(previous)
+
+	if prevPrice == 0 || currPrice == 0 {
+		return 0.0
+	}
+
+	change := ((currPrice - prevPrice) / prevPrice) * 100
+
+	// Cap extreme values
+	if change > maxPercent {
+		return maxPercent
+	}
+	if change < -maxPercent {
+		return -maxPercent
+	}
+
+	return change
+}
+
+// ExtractSafeTokenSymbol extracts token symbols with fallbacks
+func ExtractSafeTokenSymbol(tx Transaction, tokenIndex int) string {
+	var symbol string
+
+	// Try to get symbol based on token index
+	if tokenIndex == 0 {
+		symbol = strings.TrimSpace(tx.Token0Symbol)
+		if symbol != "" {
+			return symbol
+		}
+		// Fallback to shortened address
+		if len(tx.Token0) > 6 {
+			return fmt.Sprintf("%s...%s", tx.Token0[:6], tx.Token0[len(tx.Token0)-4:])
+		}
+		return "Token0"
+	} else {
+		symbol = strings.TrimSpace(tx.Token1Symbol)
+		if symbol != "" {
+			return symbol
+		}
+		// Fallback to shortened address
+		if len(tx.Token1) > 6 {
+			return fmt.Sprintf("%s...%s", tx.Token1[:6], tx.Token1[len(tx.Token1)-4:])
+		}
+		return "Token1"
+	}
+}
+
+// CleanPoolData cleans and validates pool data for safe processing
+func CleanPoolData(pools []Pool) []Pool {
+	var cleanedPools []Pool
+
+	for _, pool := range pools {
+		// Validate and clean pool data
+		cleanedPool := pool
+		cleanedPool.PriceUSD = ValidatePrice(pool.PriceUSD)
+
+		// Validate volume (must be non-negative)
+		if pool.VolumeUSD < 0 || math.IsInf(pool.VolumeUSD, 0) || math.IsNaN(pool.VolumeUSD) {
+			cleanedPool.VolumeUSD = 0
+		}
+
+		// Validate transactions count
+		if pool.Transactions < 0 {
+			cleanedPool.Transactions = 0
+		}
+
+		// Validate percentage change
+		if math.IsInf(pool.LastPriceChangeUSD24h, 0) || math.IsNaN(pool.LastPriceChangeUSD24h) {
+			cleanedPool.LastPriceChangeUSD24h = 0
+		}
+
+		// Only include pools with valid data
+		if cleanedPool.PriceUSD > 0 || cleanedPool.VolumeUSD > 0 {
+			cleanedPools = append(cleanedPools, cleanedPool)
+		}
+	}
+
+	return cleanedPools
 }
 
 // ============================================================================

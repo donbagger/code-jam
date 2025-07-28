@@ -101,7 +101,7 @@ fn create_cache_key(endpoint: &str, params: &ApiParams) -> String {
 // CORE API HELPERS (12 functions)
 // ============================================================================
 
-/// Makes an HTTP request to the DexPaprika API with caching and error handling
+/// Makes an HTTP request to the DexPaprika API with improved error handling and caching
 pub async fn api_request(endpoint: &str, params: Option<ApiParams>) -> Result<Value> {
     let params = params.unwrap_or_default();
     let cache_key = create_cache_key(endpoint, &params);
@@ -122,30 +122,100 @@ pub async fn api_request(endpoint: &str, params: Option<ApiParams>) -> Result<Va
         url.query_pairs_mut().append_pair(key, &value);
     }
     
-    // Make request with timeout
-    let client = get_client();
-    let response = timeout(DEFAULT_TIMEOUT, client.get(url).send()).await??;
+    // Retry mechanism for failed requests
+    let max_retries = 3;
+    let mut last_error = None;
     
-    // Check for API errors
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await?;
-        if let Ok(api_error) = serde_json::from_str::<APIError>(&error_text) {
-            return Err(PaprikaError::ApiError(api_error.error));
+    for attempt in 0..max_retries {
+        // Make request with timeout
+        let client = get_client();
+        
+        match timeout(DEFAULT_TIMEOUT, client.get(url.clone()).send()).await {
+            Ok(Ok(response)) => {
+                // Check for API errors
+                let status = response.status();
+                if !status.is_success() {
+                    let error_text = match response.text().await {
+                        Ok(text) => text,
+                        Err(e) => {
+                            last_error = Some(PaprikaError::NetworkError(e));
+                            if attempt < max_retries - 1 {
+                                tokio::time::sleep(Duration::from_secs(attempt + 1)).await;
+                                continue;
+                            }
+                            return Err(last_error.unwrap());
+                        }
+                    };
+                    
+                    if let Ok(api_error) = serde_json::from_str::<APIError>(&error_text) {
+                        return Err(PaprikaError::ApiError(api_error.error));
+                    }
+                    return Err(PaprikaError::HttpError(format!("{}: {}", status, error_text)));
+                }
+                
+                // Validate response content
+                let response_bytes = match response.bytes().await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        last_error = Some(PaprikaError::NetworkError(e));
+                        if attempt < max_retries - 1 {
+                            tokio::time::sleep(Duration::from_secs(attempt + 1)).await;
+                            continue;
+                        }
+                        return Err(last_error.unwrap());
+                    }
+                };
+                
+                if response_bytes.is_empty() {
+                    last_error = Some(PaprikaError::ApiError("Empty response body".to_string()));
+                    if attempt < max_retries - 1 {
+                        tokio::time::sleep(Duration::from_secs(attempt + 1)).await;
+                        continue;
+                    }
+                    return Err(last_error.unwrap());
+                }
+                
+                // Parse JSON response
+                match serde_json::from_slice::<Value>(&response_bytes) {
+                    Ok(data) => {
+                        // Store successful result in cache
+                        cache.insert(cache_key, CacheEntry {
+                            data: data.clone(),
+                            timestamp: Utc::now(),
+                        });
+                        
+                        return Ok(data);
+                    }
+                    Err(e) => {
+                        last_error = Some(PaprikaError::JsonError(e));
+                        if attempt < max_retries - 1 {
+                            tokio::time::sleep(Duration::from_secs(attempt + 1)).await;
+                            continue;
+                        }
+                        return Err(last_error.unwrap());
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                last_error = Some(PaprikaError::NetworkError(e));
+                if attempt < max_retries - 1 {
+                    tokio::time::sleep(Duration::from_secs(attempt + 1)).await;
+                    continue;
+                }
+                return Err(last_error.unwrap());
+            }
+            Err(_) => {
+                last_error = Some(PaprikaError::TimeoutError(tokio::time::error::Elapsed::new()));
+                if attempt < max_retries - 1 {
+                    tokio::time::sleep(Duration::from_secs(attempt + 1)).await;
+                    continue;
+                }
+                return Err(last_error.unwrap());
+            }
         }
-        return Err(PaprikaError::HttpError(status.to_string()));
     }
     
-    // Parse JSON response
-    let data: Value = response.json().await?;
-    
-    // Store in cache
-    cache.insert(cache_key, CacheEntry {
-        data: data.clone(),
-        timestamp: Utc::now(),
-    });
-    
-    Ok(data)
+    Err(last_error.unwrap_or(PaprikaError::GenericError("Unknown error after retries".to_string())))
 }
 
 /// Retrieves all supported blockchain networks
@@ -533,6 +603,130 @@ pub fn extract_pool_tokens(data: &Value) -> Vec<Token> {
 }
 
 // ============================================================================
+// DATA VALIDATION & SAFETY HELPERS
+// ============================================================================
+
+/// Validates and sanitizes price data
+pub fn validate_price(price: f64) -> f64 {
+    if price <= 0.0 || !price.is_finite() {
+        0.0
+    } else {
+        price
+    }
+}
+
+/// Calculates safe percentage change with bounds checking
+pub fn calculate_safe_percentage(current: f64, previous: f64, max_percent: f64) -> f64 {
+    let curr_price = validate_price(current);
+    let prev_price = validate_price(previous);
+    
+    if prev_price == 0.0 || curr_price == 0.0 {
+        return 0.0;
+    }
+    
+    let change = ((curr_price - prev_price) / prev_price) * 100.0;
+    
+    // Cap extreme values
+    if change > max_percent {
+        max_percent
+    } else if change < -max_percent {
+        -max_percent
+    } else {
+        change
+    }
+}
+
+/// Extracts safe token symbols with fallbacks
+pub fn extract_safe_token_symbol(transaction: &Transaction, token_index: u8) -> String {
+    let symbol = match token_index {
+        0 => &transaction.token_0_symbol,
+        1 => &transaction.token_1_symbol,
+        _ => return "Unknown".to_string(),
+    };
+    
+    // Return symbol if it's not empty
+    if !symbol.trim().is_empty() {
+        return symbol.trim().to_string();
+    }
+    
+    // Fallback to shortened address
+    let address = match token_index {
+        0 => &transaction.token_0,
+        1 => &transaction.token_1,
+        _ => return "Unknown".to_string(),
+    };
+    
+    if address.len() > 6 {
+        format!("{}...{}", &address[..6], &address[address.len()-4..])
+    } else {
+        format!("Token{}", token_index)
+    }
+}
+
+/// Cleans and validates pool data for safe processing
+pub fn clean_pool_data(pools: &[Pool]) -> Vec<Pool> {
+    pools.iter()
+        .filter_map(|pool| {
+            // Create a cleaned version of the pool
+            let mut cleaned_pool = pool.clone();
+            
+            // Validate and clean price
+            cleaned_pool.price_usd = validate_price(pool.price_usd);
+            
+            // Validate volume (must be non-negative)
+            if pool.volume_usd < 0.0 || !pool.volume_usd.is_finite() {
+                cleaned_pool.volume_usd = 0.0;
+            }
+            
+            // Validate transactions count
+            if pool.transactions < 0 {
+                cleaned_pool.transactions = 0;
+            }
+            
+            // Validate percentage change
+            if !pool.last_price_change_usd_24h.is_finite() {
+                cleaned_pool.last_price_change_usd_24h = 0.0;
+            }
+            
+            // Only include pools with valid data
+            if cleaned_pool.price_usd > 0.0 || cleaned_pool.volume_usd > 0.0 {
+                Some(cleaned_pool)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Enhanced transaction info extraction with safe symbol handling
+pub fn extract_transaction_info_safe(data: &Value) -> HashMap<String, Value> {
+    let mut info = HashMap::new();
+    
+    if let Ok(tx) = serde_json::from_value::<Transaction>(data.clone()) {
+        info.insert("id".to_string(), json!(tx.id));
+        info.insert("pool_id".to_string(), json!(tx.pool_id));
+        info.insert("sender".to_string(), json!(tx.sender));
+        info.insert("token_0".to_string(), json!(tx.token_0));
+        info.insert("token_1".to_string(), json!(tx.token_1));
+        
+        // Use safe symbol extraction
+        info.insert("token_0_symbol".to_string(), json!(extract_safe_token_symbol(&tx, 0)));
+        info.insert("token_1_symbol".to_string(), json!(extract_safe_token_symbol(&tx, 1)));
+        
+        info.insert("amount_0".to_string(), json!(tx.amount_0));
+        info.insert("amount_1".to_string(), json!(tx.amount_1));
+        
+        // Validate prices
+        info.insert("price_0_usd".to_string(), json!(validate_price(tx.price_0_usd)));
+        info.insert("price_1_usd".to_string(), json!(validate_price(tx.price_1_usd)));
+        
+        info.insert("created_at".to_string(), json!(tx.created_at));
+    }
+    
+    info
+}
+
+// ============================================================================
 // FILTERING & SORTING HELPERS (12 functions)
 // ============================================================================
 
@@ -544,10 +738,13 @@ pub fn filter_by_price_change(pools: &[Pool], min_change: f64) -> Vec<Pool> {
         .collect()
 }
 
-/// Filters items by minimum volume
+/// Filters items by minimum volume with validation
 pub fn filter_by_volume(pools: &[Pool], min_volume: f64) -> Vec<Pool> {
     pools.iter()
-        .filter(|pool| pool.volume_usd >= min_volume)
+        .filter(|pool| {
+            let volume = pool.volume_usd;
+            volume.is_finite() && volume >= 0.0 && volume >= min_volume
+        })
         .cloned()
         .collect()
 }
@@ -650,10 +847,18 @@ pub fn filter_recent_transactions(transactions: &[Transaction], hours: u32) -> V
         .collect()
 }
 
-/// Filters transactions by minimum USD value
+/// Filters transactions by minimum USD value with validation
 pub fn filter_large_transactions(transactions: &[Transaction], min_usd: f64) -> Vec<Transaction> {
     transactions.iter()
-        .filter(|tx| (tx.price_0_usd + tx.price_1_usd) >= min_usd)
+        .filter(|tx| {
+            // Validate prices before using them
+            let price_0 = validate_price(tx.price_0_usd);
+            let price_1 = validate_price(tx.price_1_usd);
+            
+            // Only include transactions with valid, positive prices
+            let total_usd = price_0.max(price_1);
+            total_usd >= min_usd
+        })
         .cloned()
         .collect()
 }
@@ -691,12 +896,25 @@ pub fn filter_by_timeframe(records: &[OHLCVRecord], start_time: &str, end_time: 
 // ANALYSIS HELPERS (10 functions)
 // ============================================================================
 
-/// Calculates percentage price change
+/// Calculates percentage price change with bounds checking
 pub fn calculate_price_change(current: f64, previous: f64) -> f64 {
-    if previous == 0.0 {
+    // Validate inputs
+    if previous <= 0.0 || current < 0.0 || !current.is_finite() || !previous.is_finite() {
         return 0.0;
     }
-    ((current - previous) / previous) * 100.0
+    
+    let change = ((current - previous) / previous) * 100.0;
+    
+    // Cap extreme values to prevent unrealistic percentages
+    const MAX_CHANGE: f64 = 10000.0;
+    if change > MAX_CHANGE {
+        return MAX_CHANGE;
+    }
+    if change < -MAX_CHANGE {
+        return -MAX_CHANGE;
+    }
+    
+    change
 }
 
 /// Calculates volume-weighted average price
