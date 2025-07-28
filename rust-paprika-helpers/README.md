@@ -82,14 +82,6 @@ cargo run --bin example
 | **🚀 Advanced** | 5 | High-level market analysis |
 | **⚡ Async** | 5 | Concurrent, high-performance operations |
 
-## 🌟 Why Developers Love It
-
-> *"Went from idea to working DeFi dashboard in 30 minutes!"* - @rustacean_dev
-
-> *"The type safety caught 3 bugs at compile time that would have been production issues"* - @blockchain_builder  
-
-> *"67 functions covering everything I need for DeFi development"* - @defi_analyst
-
 ## 🔗 More Resources
 
 - [📖 Full Documentation](https://docs.rs/paprika-helpers)
