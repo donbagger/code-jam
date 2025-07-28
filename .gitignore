@@ -1,0 +1,87 @@
+# Paprika Vibe-Code Starter Repository
+# Users fork this repo to build their ≤50 line DeFi projects!
+
+# Hide development artifacts and old structure
+/OLD_STRUCTURE/
+/PRODUCTION_ORGANIZATION_SUMMARY.md
+/GO_IMPLEMENTATION_SUMMARY.md
+/PARITY_ACHIEVEMENT_SUMMARY.md
+/RUST_IMPLEMENTATION_SUMMARY.md
+Cargo.toml
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+env/
+ENV/
+
+# Node.js artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.npm
+.yarn
+.pnpm-debug.log*
+
+# Go artifacts
+*.exe
+*.exe~
+*.dll
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+
+# Rust artifacts
+target/
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+.vs/
+
+# OS files
+.DS_Store
+Thumbs.db
+*~
+
+# Cache directories
+.cache/
+.tmp/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# User project artifacts (for when users fork and build)
+my-project/
+submission/
+vibe-code-*/ 

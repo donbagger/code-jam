@@ -1,0 +1,28 @@
+{
+  "name": "paprika-helpers",
+  "version": "1.0.0",
+  "description": "67 powerful functions for DeFi development. Get real-time blockchain data with just a few lines of JavaScript!",
+  "main": "Docs/internal/paprika_helpers.js",
+  "scripts": {
+    "start": "node example.js",
+    "test": "node Docs/tests/test_javascript_helpers.js"
+  },
+  "keywords": [
+    "defi",
+    "blockchain",
+    "crypto",
+    "ethereum",
+    "solana",
+    "dex",
+    "trading",
+    "analytics"
+  ],
+  "author": "Paprika Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+} 

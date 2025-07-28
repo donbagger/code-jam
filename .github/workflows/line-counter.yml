@@ -1,0 +1,85 @@
+name: Line Counter
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  count-lines:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Count lines in main Python file
+      run: |
+        # Find the main Python file (excluding helper library)
+        MAIN_FILE=$(find . -name "*.py" -not -name "paprika_helpers.py" -not -path "./.venv/*" -not -path "./venv/*" | head -1)
+        
+        if [ -z "$MAIN_FILE" ]; then
+          echo "❌ No main Python file found"
+          exit 1
+        fi
+        
+        echo "📄 Analyzing: $MAIN_FILE"
+        
+        # Count non-empty, non-comment lines
+        LINE_COUNT=$(grep -v '^[[:space:]]*#' "$MAIN_FILE" | grep -v '^[[:space:]]*$' | wc -l)
+        
+        echo "📊 Line count: $LINE_COUNT"
+        
+        if [ "$LINE_COUNT" -gt 50 ]; then
+          echo "❌ Project exceeds 50-line limit! ($LINE_COUNT lines)"
+          echo "💡 Tips to reduce lines:"
+          echo "   - Use helper functions from paprika_helpers.py"
+          echo "   - Combine related operations"
+          echo "   - Remove unnecessary comments/whitespace"
+          exit 1
+        else
+          echo "✅ Project within 50-line limit! ($LINE_COUNT/50 lines)"
+        fi
+    
+    - name: Check for required badge
+      run: |
+        if [ -f "README.md" ]; then
+          if grep -q "coinpaprika.com/badge.svg" README.md; then
+            echo "✅ CoinPaprika badge found in README"
+          else
+            echo "❌ CoinPaprika badge missing from README"
+            echo "Add: [![Crypto API by CoinPaprika](https://coinpaprika.com/badge.svg?text=Crypto+API+by+CoinPaprika)](https://coinpaprika.com/vibe-code-jam)"
+            exit 1
+          fi
+        else
+          echo "❌ README.md file missing"
+          exit 1
+        fi
+    
+    - name: Validate project structure
+      run: |
+        echo "🔍 Validating project structure..."
+        
+        # Check for main Python file
+        if ! find . -name "*.py" -not -name "paprika_helpers.py" | grep -q .; then
+          echo "❌ No main Python file found"
+          exit 1
+        fi
+        
+        # Check for README
+        if [ ! -f "README.md" ]; then
+          echo "❌ README.md missing"
+          exit 1
+        fi
+        
+        # Check for requirements.txt
+        if [ ! -f "requirements.txt" ]; then
+          echo "⚠️  requirements.txt missing (recommended)"
+        fi
+        
+        echo "✅ Project structure looks good!" 
