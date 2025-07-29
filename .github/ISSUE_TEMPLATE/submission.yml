@@ -1,7 +1,7 @@
 name: "🚀 Vibe-Code Submission"
 description: "Submit your ≤50-line DeFi project using CoinPaprika data"
-title: "[SUBMISSION] "
-labels: ["submission", "vibe-code"]
+title: "[SUBMISSION] <project-title>"
+labels: ["submission", "vibe-code", "needs-validation"]
 body:
   - type: markdown
     attributes:
@@ -38,15 +38,29 @@ body:
       required: true
 
   - type: dropdown
+    id: category
+    attributes:
+      label: "📂 Project Category"
+      description: "What type of project did you build?"
+      options:
+        - CLI Tool
+        - Bot/Automation
+        - Visualization
+        - Dashboard/Web App
+        - Data Analytics
+        - Trading/Arbitrage
+        - Portfolio Tool
+        - Price Monitor
+        - Other
+    validations:
+      required: true
+
+  - type: input
     id: language
     attributes:
       label: "💻 Primary Language"
       description: "Which language did you use for your main implementation?"
-      options:
-        - Python
-        - JavaScript/Node.js
-        - Go
-        - Rust
+      placeholder: "Python / JavaScript / Go / Rust / Other"
     validations:
       required: true
 
@@ -83,6 +97,6 @@ body:
     attributes:
       label: "💬 Feedback (optional)"
       description: "Any feedback about the contest, helpers, or suggestions for future events?"
-      placeholder: "The Python helpers were amazing! Would love to see..."
+      placeholder: "The Python helpers were amazing! Would love to see though..."
     validations:
       required: false 

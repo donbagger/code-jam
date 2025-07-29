@@ -1,0 +1,237 @@
+name: "🔍 Validate Submission Repository"
+
+on:
+  issues:
+    types: [opened, edited]
+  
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  validate-submission:
+    if: contains(github.event.issue.labels.*.name, 'submission')
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: "📝 Extract repository URL from issue body"
+      id: parse
+      run: |
+        body=$(jq -r '.issue.body' <<< "${{ toJson(github.event) }}")
+        echo "Parsing issue body for repository URL..."
+        
+        # Extract GitHub repository URL from issue body
+        repo_url=$(echo "$body" | grep -Eo 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' | head -n1)
+        
+        if [ -z "$repo_url" ]; then
+          echo "❌ No repository URL found in submission"
+          echo "repo=" >> $GITHUB_OUTPUT
+        else
+          echo "✅ Found repository: $repo_url"
+          echo "repo=$repo_url" >> $GITHUB_OUTPUT
+        fi
+
+    - name: "❌ Fail if no repository URL"
+      if: steps.parse.outputs.repo == ''
+      run: |
+        echo "::error::No valid GitHub repository URL found in submission"
+        echo "Please ensure your submission includes a valid GitHub repository URL"
+        exit 1
+
+    - name: "🔍 Parse owner and repository name"
+      id: split
+      run: |
+        url="${{ steps.parse.outputs.repo }}"
+        path="${url#https://github.com/}"
+        owner="${path%%/*}"
+        repo="${path#*/}"
+        
+        echo "owner=$owner" >> $GITHUB_OUTPUT
+        echo "repo=$repo" >> $GITHUB_OUTPUT
+        echo "📂 Repository: $owner/$repo"
+
+    - name: "📊 Get repository metadata"
+      id: repo_data
+      uses: octokit/request-action@v2.x
+      with:
+        route: GET /repos/${{ steps.split.outputs.owner }}/${{ steps.split.outputs.repo }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: "🏷️ Get repository topics"
+      id: topics
+      uses: octokit/request-action@v2.x
+      with:
+        route: GET /repos/${{ steps.split.outputs.owner }}/${{ steps.split.outputs.repo }}/topics
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: "📄 Fetch README content"
+      id: readme
+      run: |
+        echo "📥 Fetching README from submitted repository..."
+        
+        if curl -sL "https://raw.githubusercontent.com/${{ steps.split.outputs.owner }}/${{ steps.split.outputs.repo }}/HEAD/README.md" -o README.md; then
+          if [ -s README.md ]; then
+            echo "✅ README.md found and downloaded"
+            echo "has_readme=yes" >> $GITHUB_OUTPUT
+          else
+            echo "❌ README.md is empty"
+            echo "has_readme=no" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "❌ README.md not found"
+          echo "has_readme=no" >> $GITHUB_OUTPUT
+        fi
+
+    - name: "🔍 Validate submission requirements"
+      id: validate
+      run: |
+        echo "🔍 Running comprehensive validation checks..."
+        
+        pass=true
+        reasons=()
+        warnings=()
+
+        # 1. Check if repository is public
+        private=$(jq -r '.data.private' <<< '${{ steps.repo_data.outputs.data }}')
+        if [[ "$private" == "true" ]]; then
+          pass=false
+          reasons+=("❌ Repository is private (must be public for contest)")
+        else
+          echo "✅ Repository is public"
+        fi
+
+        # 2. Check for real development (pushed_at != created_at)
+        created=$(jq -r '.data.created_at' <<< '${{ steps.repo_data.outputs.data }}')
+        pushed=$(jq -r '.data.pushed_at' <<< '${{ steps.repo_data.outputs.data }}')
+        if [[ "$created" == "$pushed" ]]; then
+          pass=false
+          reasons+=("❌ No commits after repository creation (template-only repo)")
+        else
+          echo "✅ Repository has real development commits"
+        fi
+
+        # 3. Check for required contest topic tag
+        topics=$(jq -r '.data.names[]?' <<< '${{ steps.topics.outputs.data }}')
+        if ! echo "$topics" | grep -qi 'paprika-vibe-0825'; then
+          pass=false
+          reasons+=("❌ Missing required topic tag 'paprika-vibe-0825'")
+        else
+          echo "✅ Contest topic tag found"
+        fi
+
+        # 4. Check for required badges in README
+        if [[ "${{ steps.readme.outputs.has_readme }}" == "yes" ]]; then
+          # Check for CoinPaprika badge
+          if ! grep -qi 'coinpaprika\.com/badge\.svg.*CoinPaprika' README.md; then
+            pass=false
+            reasons+=("❌ Missing required CoinPaprika badge in README")
+          else
+            echo "✅ CoinPaprika badge found in README"
+          fi
+          
+          # Check for DexPaprika MCP badge
+          if ! grep -qi 'dexpaprika\.com.*MCP\|coinpaprika\.com/badge\.svg.*DexPaprika.*MCP' README.md; then
+            pass=false
+            reasons+=("❌ Missing required DexPaprika MCP badge in README")
+          else
+            echo "✅ DexPaprika MCP badge found in README"
+          fi
+          
+          # Check for project description
+          if ! grep -qi 'what it is\|description\|project.*does'; then
+            warnings+=("⚠️ Consider adding a clear project description")
+          fi
+          
+          # Check for demo/screenshot
+          if ! grep -qE '\!\[.*\]\(.*\.(png|jpg|jpeg|gif|webp)\)' README.md && \
+             ! grep -qi 'demo\|screenshot\|preview'; then
+            warnings+=("⚠️ Consider adding a screenshot or demo")
+          fi
+        else
+          pass=false
+          reasons+=("❌ README.md not found or empty")
+        fi
+
+        # 5. Check for template usage (not fork)
+        if jq -r '.data.fork' <<< '${{ steps.repo_data.outputs.data }}' | grep -q 'true'; then
+          pass=false
+          reasons+=("❌ Repository is a fork - must use 'Use this template' instead")
+        else
+          echo "✅ Repository created from template (not forked)"
+        fi
+
+        # Store results
+        echo "pass=$pass" >> $GITHUB_OUTPUT
+        
+        # Save reasons and warnings to files
+        printf "%s\n" "${reasons[@]}" > reasons.txt
+        printf "%s\n" "${warnings[@]}" > warnings.txt
+        
+        echo "🎯 Validation complete - Status: $([ "$pass" = "true" ] && echo "PASS" || echo "NEEDS FIX")"
+
+    - name: "📝 Create validation comment"
+      if: always()
+      uses: peter-evans/create-or-update-comment@v4
+      with:
+        issue-number: ${{ github.event.issue.number }}
+        body: |
+          ## 🎯 **Submission Validation Results**
+          
+          **Repository:** ${{ steps.parse.outputs.repo }}  
+          **Status:** ${{ steps.validate.outputs.pass == 'true' && '✅ **APPROVED** - Ready for contest!' || '❌ **NEEDS FIXES** - Please address issues below' }}
+          
+          ---
+          
+          ### ${{ steps.validate.outputs.pass == 'true' && '✅ All Checks Passed!' || '❌ Issues Found:' }}
+          
+                     ${{ steps.validate.outputs.pass == 'true' && '🎉 **Congratulations!** Your submission meets all contest requirements and is ready for judging.' || '' }}
+           
+           ${{ steps.validate.outputs.pass == 'false' && 'Please check the detailed validation logs in the GitHub Actions tab for specific issues.' || '' }}
+          
+          ${{ steps.validate.outputs.pass == 'false' && '### 💡 **How to Fix:**' || '' }}
+          ${{ steps.validate.outputs.pass == 'false' && '1. **Make your repository public** in Settings → General → Change visibility' || '' }}
+          ${{ steps.validate.outputs.pass == 'false' && '2. **Add topic tag** `paprika-vibe-0825` in Settings → General → Topics' || '' }}
+          ${{ steps.validate.outputs.pass == 'false' && '3. **Add required badges** to your README (copy from template)' || '' }}
+          ${{ steps.validate.outputs.pass == 'false' && '4. **Make real commits** with your project code (not just template copy)' || '' }}
+          ${{ steps.validate.outputs.pass == 'false' && '5. **Use template** button instead of forking the repository' || '' }}
+          
+          ---
+          
+          ${{ steps.validate.outputs.pass == 'true' && '**Next Steps:** Your submission will be reviewed by our judging panel. Good luck! 🚀' || '**Next Steps:** Fix the issues above and re-submit, or edit this issue to trigger re-validation.' }}
+          
+          *Validation performed automatically • [Contest Rules](../CONTEST_RULES.md) • [Quick Start Guide](../QUICK_START.md)*
+
+    - name: "🏷️ Update submission labels"
+      if: always()
+      uses: actions-ecosystem/action-add-labels@v1
+      with:
+        labels: ${{ steps.validate.outputs.pass == 'true' && 'validated-✅' || 'needs-fix-❌' }}
+
+    - name: "🏷️ Remove needs-validation label"
+      if: always()
+      uses: actions-ecosystem/action-remove-labels@v1
+      with:
+        labels: needs-validation
+
+    - name: "📊 Record validated submission"
+      if: steps.validate.outputs.pass == 'true'
+      run: |
+        echo "🎉 Submission validated successfully!"
+        echo "Repository: ${{ steps.parse.outputs.repo }}"
+        echo "Issue: #${{ github.event.issue.number }}"
+        echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        
+        # Optional: Send to webhook for tracking validated submissions
+        if [ -n "${{ secrets.SUBMISSION_WEBHOOK }}" ]; then
+          curl -s -X POST "${{ secrets.SUBMISSION_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "event": "submission_validated",
+              "repository": "${{ steps.parse.outputs.repo }}",
+              "issue_number": ${{ github.event.issue.number }},
+              "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'",
+              "contest": "paprika-vibe-0825"
+            }' || echo "Webhook notification failed (non-critical)"
+        fi 
