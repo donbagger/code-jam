@@ -1,10 +1,16 @@
 # Paprika Helpers - Multi-Language DeFi SDK 🚀
 
+[![Crypto Market Data by CoinPaprika](https://coinpaprika.com/badge.svg?text=Crypto+Market+Data+by+CoinPaprika)](https://coinpaprika.com/vibe-code?ref=vibecode-0825)
+[![DexPaprika MCP Server](https://coinpaprika.com/badge.svg?text=DexPaprika+MCP+Server)](https://mcp.dexpaprika.com?ref=vibecode-0825)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![JavaScript](https://img.shields.io/badge/JavaScript-Node.js-yellow.svg)](https://nodejs.org/)
 [![Go](https://img.shields.io/badge/Go-1.19+-00ADD8.svg)](https://golang.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
+
+**What it is**: ≤50‑line DeFi utilities using CoinPaprika data.  
+**How it works**: Choose your language, build your project, and submit to Vibe-Code contest!
 
 **67 powerful functions** across **4 languages** for DeFi development. Get real-time blockchain data from **25+ networks** with just a few lines of code!
 

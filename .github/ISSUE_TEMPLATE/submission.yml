@@ -1,0 +1,88 @@
+name: "🚀 Vibe-Code Submission"
+description: "Submit your ≤50-line DeFi project using CoinPaprika data"
+title: "[SUBMISSION] "
+labels: ["submission", "vibe-code"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🎯 Paprika Vibe-Code Submission
+        
+        Thanks for participating! Please fill out all required fields below.
+        
+  - type: input
+    id: repo_url
+    attributes:
+      label: "🔗 Repository URL"
+      description: "Link to your public GitHub repository (must be created using this template)"
+      placeholder: "https://github.com/username/my-paprika-project"
+    validations:
+      required: true
+
+  - type: input
+    id: demo_url
+    attributes:
+      label: "🎬 Demo URL (optional)"
+      description: "Link to live demo, video, or hosted version"
+      placeholder: "https://your-demo.com or https://youtube.com/..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "📝 Project Description"
+      description: "What does your project do? How does it use CoinPaprika data? (50-200 words)"
+      placeholder: "My project analyzes DeFi liquidity across multiple chains using CoinPaprika's API..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: language
+    attributes:
+      label: "💻 Primary Language"
+      description: "Which language did you use for your main implementation?"
+      options:
+        - Python
+        - JavaScript/Node.js
+        - Go
+        - Rust
+    validations:
+      required: true
+
+  - type: textarea
+    id: innovation
+    attributes:
+      label: "💡 Innovation Highlights"
+      description: "What makes your project unique or innovative? Any special features?"
+      placeholder: "Uses real-time arbitrage detection, implements custom sorting algorithms..."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: requirements
+    attributes:
+      label: "✅ Submission Requirements"
+      description: "Please confirm your submission meets all requirements"
+      options:
+        - label: "My project has ≤50 effective lines of code (excluding comments and whitespace)"
+          required: true
+        - label: "I used the official Paprika Helpers starter template (not a fork)"
+          required: true
+        - label: "My README includes the required CoinPaprika badges"
+          required: true
+        - label: "My repository has real commits (not just template copy)"
+          required: true
+        - label: "My project uses CoinPaprika or DexPaprika API"
+          required: true
+        - label: "I have included a screenshot or GIF in my README"
+          required: true
+
+  - type: textarea
+    id: feedback
+    attributes:
+      label: "💬 Feedback (optional)"
+      description: "Any feedback about the contest, helpers, or suggestions for future events?"
+      placeholder: "The Python helpers were amazing! Would love to see..."
+    validations:
+      required: false 

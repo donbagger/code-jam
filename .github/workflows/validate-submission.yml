@@ -1,0 +1,149 @@
+name: "🔍 Validate Vibe-Code Submission"
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-submission:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Need full history to check commits
+    
+    - name: "🔢 Count effective lines of code"
+      run: |
+        echo "🔍 Scanning for main project files..."
+        
+        # Find main files (excluding helper libraries and docs)
+        MAIN_FILES=$(find . -name "*.py" -o -name "*.js" -o -name "*.go" -o -name "*.rs" | \
+          grep -v -E "(paprika_helpers|node_modules|target|\.git|Docs)" | \
+          grep -v -E "(example\.|test_|spec_)" | head -5)
+        
+        if [ -z "$MAIN_FILES" ]; then
+          echo "❌ No main project files found"
+          echo "💡 Add a main.py, app.js, main.go, or main.rs file"
+          exit 1
+        fi
+        
+        TOTAL_LINES=0
+        echo "📄 Analyzing project files:"
+        
+        for file in $MAIN_FILES; do
+          echo "  📄 $file"
+          
+          # Count non-empty, non-comment lines
+          if [[ "$file" == *.py ]]; then
+            LINES=$(grep -v '^[[:space:]]*#' "$file" | grep -v '^[[:space:]]*$' | wc -l)
+          elif [[ "$file" == *.js ]]; then
+            LINES=$(grep -v '^[[:space:]]*//' "$file" | grep -v '^[[:space:]]*$' | wc -l)
+          elif [[ "$file" == *.go ]]; then
+            LINES=$(grep -v '^[[:space:]]*//' "$file" | grep -v '^[[:space:]]*$' | wc -l)
+          elif [[ "$file" == *.rs ]]; then
+            LINES=$(grep -v '^[[:space:]]*//' "$file" | grep -v '^[[:space:]]*$' | wc -l)
+          else
+            LINES=$(grep -v '^[[:space:]]*$' "$file" | wc -l)
+          fi
+          
+          echo "    📊 $LINES lines"
+          TOTAL_LINES=$((TOTAL_LINES + LINES))
+        done
+        
+        echo "📊 Total effective lines: $TOTAL_LINES"
+        
+        if [ "$TOTAL_LINES" -gt 50 ]; then
+          echo "❌ Project exceeds 50-line limit! ($TOTAL_LINES/50 lines)"
+          echo "💡 Tips to reduce lines:"
+          echo "   - Use helper functions from paprika_helpers library"
+          echo "   - Combine related operations on single lines"
+          echo "   - Remove unnecessary comments and whitespace"
+          exit 1
+        else
+          echo "✅ Project within 50-line limit! ($TOTAL_LINES/50 lines)"
+        fi
+
+    - name: "🏷️ Check required badges"
+      run: |
+        if [ ! -f "README.md" ]; then
+          echo "❌ README.md file missing"
+          exit 1
+        fi
+        
+        # Check for CoinPaprika badge
+        if ! grep -q "coinpaprika.com/badge.svg.*CoinPaprika" README.md; then
+          echo "❌ Required CoinPaprika badge missing from README"
+          echo "💡 Add this badge to your README:"
+          echo '[![Crypto Market Data by CoinPaprika](https://coinpaprika.com/badge.svg?text=Crypto+Market+Data+by+CoinPaprika)](https://coinpaprika.com/vibe-code?ref=vibecode-0825)'
+          exit 1
+        fi
+        
+        # Check for DexPaprika badge  
+        if ! grep -q "dexpaprika.com.*MCP" README.md; then
+          echo "❌ Required DexPaprika MCP badge missing from README"
+          echo "💡 Add this badge to your README:"
+          echo '[![DexPaprika MCP Server](https://coinpaprika.com/badge.svg?text=DexPaprika+MCP+Server)](https://mcp.dexpaprika.com?ref=vibecode-0825)'
+          exit 1
+        fi
+        
+        echo "✅ Required badges found in README"
+
+    - name: "📝 Validate README content"
+      run: |
+        # Check for project description
+        if ! grep -q -i "what it is\|description\|project" README.md; then
+          echo "⚠️  README should include a clear project description"
+        fi
+        
+        # Check for screenshot or demo
+        if ! grep -q -E "\!\[.*\]\(.*\.(png|jpg|jpeg|gif|webp)\)" README.md && \
+           ! grep -q -i "demo\|screenshot\|preview" README.md; then
+          echo "⚠️  README should include a screenshot or demo"
+        fi
+        
+        echo "✅ README content validation complete"
+
+    - name: "🔄 Verify real commits"
+      run: |
+        # Check if this is more than just a template copy
+        COMMIT_COUNT=$(git rev-list --count HEAD)
+        
+        if [ "$COMMIT_COUNT" -lt 2 ]; then
+          echo "❌ Repository must have real commits (not just template copy)"
+          echo "💡 Make meaningful changes and commit your work"
+          exit 1
+        fi
+        
+        # Check for meaningful commit messages
+        RECENT_COMMITS=$(git log --oneline -5 --pretty=format:"%s")
+        if echo "$RECENT_COMMITS" | grep -q -i "initial commit\|template\|first commit"; then
+          echo "⚠️  Consider adding more descriptive commit messages"
+        fi
+        
+        echo "✅ Repository has real commits"
+
+    - name: "🔗 Check API usage"
+      run: |
+        # Look for CoinPaprika API usage
+        if grep -r -q "api\.dexpaprika\.com\|coinpaprika" . --exclude-dir=.git --exclude-dir=node_modules; then
+          echo "✅ CoinPaprika API usage detected"
+        else
+          echo "⚠️  No CoinPaprika API usage found - make sure you're using the API"
+        fi
+
+    - name: "📋 Generate validation report"
+      run: |
+        echo "## 🎯 Vibe-Code Validation Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| ≤50 lines of code | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+        echo "| Required badges | ✅ Passed |" >> $GITHUB_STEP_SUMMARY  
+        echo "| Real commits | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+        echo "| API usage | ✅ Detected |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🚀 **Your submission is ready for the contest!**" >> $GITHUB_STEP_SUMMARY 

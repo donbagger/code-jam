@@ -1,0 +1,38 @@
+# GitHub Template Repository Configuration
+# This file indicates this repository is designed to be used as a template
+
+name: "Paprika Vibe-Code Starter"
+description: "≤50-line DeFi project starter for Paprika Vibe-Code contest using CoinPaprika data"
+
+# Topics that will be suggested when using this template
+suggested_topics:
+  - "paprika-vibe-0825"
+  - "defi"
+  - "crypto"
+  - "coinpaprika"
+  - "dexpaprika"
+  - "contest"
+  - "vibe-code"
+
+# Template settings
+include_all_branches: false
+template_repository: true
+
+# Contest information
+contest_edition: "paprika-vibe-0825"
+contest_rules: "CONTEST_RULES.md"
+submission_template: ".github/ISSUE_TEMPLATE/submission.yml"
+
+# Validation
+validation_workflow: ".github/workflows/validate-submission.yml"
+max_lines_of_code: 50
+required_badges:
+  - "coinpaprika.com/badge.svg.*CoinPaprika"
+  - "dexpaprika.com.*MCP"
+
+# Helper libraries included
+languages:
+  - python: "python-paprika-helpers/"
+  - javascript: "javascript-paprika-helpers/"
+  - go: "go-paprika-helpers/"
+  - rust: "rust-paprika-helpers/" 
